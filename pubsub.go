@@ -2,9 +2,9 @@ package pubsub
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 	"sync"
-
-	"github.com/sirupsen/logrus"
 )
 
 type Publisher[T any] interface {
@@ -25,6 +25,7 @@ type PubSub[T any] struct {
 	capacity int
 	nextID   int
 	started  bool
+	log      *slog.Logger
 }
 
 type sub[T any] struct {
@@ -32,13 +33,18 @@ type sub[T any] struct {
 	IsBlocking bool
 }
 
-// New publisher. Specify capacity for subscriber channels
+// New publisher. Specify capacity for each subscriber channels and optional logger
 // You MUST call Start for the publisher to relay any items
-func New[T any](capacity int, input <-chan T) *PubSub[T] {
+func New[T any](capacity int, input <-chan T, optionalLogger ...*slog.Logger) *PubSub[T] {
+	log := slog.Default().With("context", fmt.Sprintf("PubSub[%T]", *new(T)))
+	if len(optionalLogger) > 0 {
+		log = optionalLogger[0]
+	}
 	return &PubSub[T]{
 		input:    input,
 		subs:     make(map[int]sub[T]),
-		capacity: capacity}
+		capacity: capacity,
+		log:      log}
 }
 
 // Start Publisher. Will run until context expires or the input channel is closed
@@ -67,7 +73,7 @@ func (ps *PubSub[T]) subscribe(isBlocking bool) (<-chan T, func()) {
 	defer ps.Unlock()
 
 	if !ps.started {
-		logrus.Warnf("Publisher[%T] not started, but has subscribers", *new(T))
+		ps.log.Warn("Publisher not started, but has subscribers")
 	}
 
 	id := ps.nextID
@@ -92,6 +98,7 @@ func (ps *PubSub[T]) unsubscribe(id int) {
 func (ps *PubSub[T]) close() {
 	ps.Lock()
 	defer ps.Unlock()
+	ps.log.Debug("stopping publisher")
 
 	for id, sub := range ps.subs {
 		delete(ps.subs, id)
@@ -101,6 +108,7 @@ func (ps *PubSub[T]) close() {
 
 func (ps *PubSub[T]) loop(ctx context.Context) {
 	defer ps.close()
+	ps.log.Debug("starting publisher")
 
 	for {
 		select {
