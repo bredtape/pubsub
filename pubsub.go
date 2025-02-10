@@ -19,9 +19,9 @@ type Publisher[T any] interface {
 }
 
 type PubSub[T any] struct {
-	sync.Mutex
 	input    <-chan T
 	subs     map[int]sub[T]
+	subsLock sync.RWMutex
 	capacity int
 	nextID   int
 	started  bool
@@ -49,8 +49,8 @@ func New[T any](capacity int, input <-chan T, optionalLogger ...*slog.Logger) *P
 
 // Start Publisher. Will run until context expires or the input channel is closed
 func (ps *PubSub[T]) Start(ctx context.Context) {
-	ps.Lock()
-	defer ps.Unlock()
+	ps.subsLock.Lock()
+	defer ps.subsLock.Unlock()
 
 	if ps.started {
 		return
@@ -69,8 +69,8 @@ func (ps *PubSub[T]) SubscribeNonBlocking() (ch <-chan T, cancel func()) {
 }
 
 func (ps *PubSub[T]) subscribe(isBlocking bool) (<-chan T, func()) {
-	ps.Lock()
-	defer ps.Unlock()
+	ps.subsLock.RLock()
+	defer ps.subsLock.RUnlock()
 
 	if !ps.started {
 		ps.log.Warn("Publisher not started, but has subscribers")
@@ -82,12 +82,27 @@ func (ps *PubSub[T]) subscribe(isBlocking bool) (<-chan T, func()) {
 	rw := make(chan T, ps.capacity)
 	ps.subs[id] = sub[T]{Channel: rw, IsBlocking: isBlocking}
 
-	return rw, func() { ps.unsubscribe(id) }
+	return rw, func() { go ps.unsubscribe(id) }
 }
 
 func (ps *PubSub[T]) unsubscribe(id int) {
-	ps.Lock()
-	defer ps.Unlock()
+	// get the subscription and start drain before final lock to remove
+	ps.subsLock.RLock()
+	sub, exists := ps.subs[id]
+	ps.subsLock.RUnlock()
+
+	if !exists {
+		return
+	}
+
+	go func() {
+		for range sub.Channel {
+			// drain
+		}
+	}()
+
+	ps.subsLock.Lock()
+	defer ps.subsLock.Unlock()
 
 	if sub, exists := ps.subs[id]; exists {
 		delete(ps.subs, id)
@@ -96,8 +111,8 @@ func (ps *PubSub[T]) unsubscribe(id int) {
 }
 
 func (ps *PubSub[T]) close() {
-	ps.Lock()
-	defer ps.Unlock()
+	ps.subsLock.Lock()
+	defer ps.subsLock.Unlock()
 	ps.log.Debug("stopping publisher")
 
 	for id, sub := range ps.subs {
@@ -124,8 +139,8 @@ func (ps *PubSub[T]) loop(ctx context.Context) {
 }
 
 func (ps *PubSub[T]) publish(ctx context.Context, x T) {
-	ps.Lock()
-	defer ps.Unlock()
+	ps.subsLock.RLock()
+	defer ps.subsLock.RUnlock()
 
 	for _, sub := range ps.subs {
 		if sub.IsBlocking {
