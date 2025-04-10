@@ -155,7 +155,6 @@ func (ps *PubSub[T]) publish(ctx context.Context, x T) {
 				return
 			case sub.Channel <- x:
 			default:
-				return
 			}
 		}
 	}
