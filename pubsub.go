@@ -69,8 +69,8 @@ func (ps *PubSub[T]) SubscribeNonBlocking() (ch <-chan T, cancel func()) {
 }
 
 func (ps *PubSub[T]) subscribe(isBlocking bool) (<-chan T, func()) {
-	ps.subsLock.RLock()
-	defer ps.subsLock.RUnlock()
+	ps.subsLock.Lock()
+	defer ps.subsLock.Unlock()
 
 	if !ps.started {
 		ps.log.Warn("Publisher not started, but has subscribers")
